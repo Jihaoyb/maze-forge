@@ -63,15 +63,15 @@ class Player:
         Update yaw/pitch from mouse movement
         """
         self.yaw += dx * self.mouse_sensitivity
-        self.pitch += dy * self.mouse_sensitivity
+        self.pitch -= dy * self.mouse_sensitivity
         
         # Clamp pitch to avoid flipping over
-        self.pitch = max(-89.0, min(89,0, self.pitch))
+        self.pitch = max(-89.0, min(89.0, self.pitch))
         
     def _forward_vector(self):
         """
         Computer the forward direction vector from yaw/pitch
-        - return [fx, fy, fz]
+        Return [fx, fy, fz]
         """
         yaw_rad = math.radians(self.yaw)
         pitch_rad = math.radians(self.pitch)
@@ -85,8 +85,7 @@ class Player:
     def _right_vector(self):
         """
         Computer the right direction vector
-        - internal used for WASD movement
-
+        Internal used for WASD movement
         """
         fx, fy, fz = self._forward_vector()
         up = [0.0, 1.0, 0.0]
@@ -129,13 +128,13 @@ class Player:
         if keys[K_w]:
             dir_x += fx
             dir_z += fz
-        if keys[K_a]:
+        if keys[K_s]:
             dir_x -= fx
             dir_z -= fz
-        if keys[K_s]:
+        if keys[K_d]:
             dir_x += rx
             dir_z += rz
-        if keys[K_d]:
+        if keys[K_a]:
             dir_x -= rx
             dir_z -= rz
             
@@ -203,7 +202,7 @@ class Player:
         height = 20.0
         px, py, pz = self.position
         eye_x, eye_y, eye_z = px, height, pz
-        center_x, center_y, center_z = pz, 0.0, pz
+        center_x, center_y, center_z = px, 0.0, pz
         
         glLoadIdentity()
         gluLookAt(eye_x, eye_y, eye_z,
@@ -214,12 +213,17 @@ class Player:
         """
         Set camera in high view mode (center above the maze)
         """
-        cx, cz = maze.get_center_world()
-        height = max(30.0, maze.rows* maze.cell_size * 1.5)
-        
-        eye_x, eye_y, eye_z = cx, height, cz
-        center_x, center_y, center_z = cx, 0.0, cz
-        
+        if maze is not None:
+            cx, cz = maze.get_center_world()
+            height = max(30.0, maze.rows * maze.cell_size * 1.5)
+            eye_x, eye_y, eye_z = cx, height, cz
+            center_x, center_y, center_z = cx, 0.0, cz
+        else:
+            # Fallback: simple top-down above player
+            px, py, pz = self.position
+            eye_x, eye_y, eye_z = px, 30.0, pz
+            center_x, center_y, center_z = px, 0.0, pz
+
         glLoadIdentity()
         gluLookAt(eye_x, eye_y, eye_z,
                   center_x, center_y, center_z,
@@ -243,7 +247,7 @@ class CameraController:
         self.mode = "fps"
         
     
-    def apply(self, player):
+    def apply(self, player, maze=None):
         """
         Sets the view matrix based on current mode
         """
@@ -257,7 +261,7 @@ class CameraController:
             player.apply_camera_top_down()
             return
         elif self.mode == "overview":
-            player.apply_camera_overview()
+            player.apply_camera_overview(maze)
             return
         else:
             player.apply_camera_fps()
@@ -329,27 +333,210 @@ class Maze:
         
         return x, z
     
+    def get_entry_yaw(self):
+        """
+        Choose a reasonable initial yaw (in degrees) for the player
+        at the entrance, based on which neighboring directions are open
+        """
+        r, c = self.entrance
+        cell = self.grid[r][c]
+
+        # South (toward +Z, deeper rows)
+        if not cell["walls"]["S"] and r + 1 < self.rows:
+            return 180.0
+        # East (toward +X, deeper cols)
+        if not cell["walls"]["E"] and c + 1 < self.cols:
+            return 90.0
+        # North (toward -Z)
+        if not cell["walls"]["N"] and r - 1 >= 0:
+            return 0.0
+        # West (toward -X)
+        if not cell["walls"]["W"] and c - 1 >= 0:
+            return -90.0
+
+        return 0.0
+    
+    # ---------- Collision helpers ----------
+
+    def world_to_cell_indices(self, x, z):
+        """
+        Convert world (x, z) to integer (row, col) indices
+        """
+        half_w = (self.cols * self.cell_size) / 2.0
+        half_h = (self.rows * self.cell_size) / 2.0
+
+        # Shift so (0,0) in grid space is top_left corner of maze
+        col = int((x + half_w) // self.cell_size)
+        row = int((z + half_h) // self.cell_size)
+
+        return row, col
+    
+    def _in_bounds(self, row, col):
+        """
+        Check if (row, col) is inside the maze grid
+        """
+        return 0 <= row < self.rows and 0 <= col < self.cols
+
+    def apply_cell_collisions(self, old_x, old_z, new_x, new_z):
+        """
+        Given an old position and a proposed new position, decide if the move crosses a wall
+        - if the move stays in the same cell:
+            - aloow movement, but keep a small radius away from any walls in that cell
+        - if the move goes to a neighboring cell:
+            - check the corresponding wall in the old cell
+            - if there is a wall, block (return old position)
+            - if no wall, allow (return new position)
+        - If the move goes outside the maze or jumps over more than one cell: block
+        """
+        row0, col0 = self.world_to_cell_indices(old_x, old_z)
+        row1, col1 = self.world_to_cell_indices(new_x, new_z)
+
+        if not (self._in_bounds(row0, col0) and self._in_bounds(row1, col1)):
+            return old_x, old_z
+
+        # Same cell => stay inside, but keep a small radius away from walls
+        if row0 == row1 and col0 == col1:
+            cell = self.grid[row0][col0]
+
+            x_center, z_center = self.cell_to_world(row0, col0)
+            s = self.cell_size / 2.0
+
+            x_left  = x_center - s
+            x_right = x_center + s
+            z_top   = z_center - s
+            z_bottom = z_center + s
+
+            # Player radius: how close we allow to get to a wall
+            radius = self.cell_size * 0.1
+
+            x_clamped = new_x
+            z_clamped = new_z
+
+            # Keep away from north wall
+            if cell["walls"]["N"]:
+                min_z = z_top + radius
+                if z_clamped < min_z:
+                    z_clamped = min_z
+            # Keep away from south wall
+            if cell["walls"]["S"]:
+                max_z = z_bottom - radius
+                if z_clamped > max_z:
+                    z_clamped = max_z
+            # Keep away from west wall
+            if cell["walls"]["W"]:
+                min_x = x_left + radius
+                if x_clamped < min_x:
+                    x_clamped = min_x
+            # Keep away from east wall
+            if cell["walls"]["E"]:
+                max_x = x_right - radius
+                if x_clamped > max_x:
+                    x_clamped = max_x
+
+            return x_clamped, z_clamped
+
+        dr = row1 - row0
+        dc = col1 - col0
+
+        if abs(dr) + abs(dc) > 1:
+            return old_x, old_z
+
+        cell = self.grid[row0][col0]
+
+        # Moving north
+        if dr == -1 and dc == 0:
+            if cell["walls"]["N"]:
+                return old_x, old_z
+            else:
+                return new_x, new_z
+        # Moving south
+        if dr == 1 and dc == 0:
+            if cell["walls"]["S"]:
+                return old_x, old_z
+            else:
+                return new_x, new_z
+        # Moving east
+        if dr == 0 and dc == 1:
+            if cell["walls"]["E"]:
+                return old_x, old_z
+            else:
+                return new_x, new_z
+        # Moving west
+        if dr == 0 and dc == -1:
+            if cell["walls"]["W"]:
+                return old_x, old_z
+            else:
+                return new_x, new_z
+        
+        return new_x, new_z
+
     # ---------- Generation (TODO) ----------
 
     def generate_random(self, seed=None):
         """
-        Implement a random maze generator (use DFS backtracker ...)
+        Generate a random maze using a depth-first search (DFS) backtracker.
+        - start from the entrance cell
+        - removes walls between cells to form a spanning tree
         """
-        # TODO
-        if seed is not None:
-            import random
-            random.seed(seed)
+        import random
+
+        # Local RNG so seeding does not affect global random state
+        rng = random.Random(seed)
+
         
-        # Simple placeholder: remove all internal walls
+        # Reset all walls to present and types to empty
         for r in range(self.rows):
             for c in range(self.cols):
                 cell = self.grid[r][c]
-                cell["walls"]["N"] = (r == 0)
-                cell["walls"]["S"] = (r == self.rows - 1)
-                cell["walls"]["W"] = (c == 0)
-                cell["walls"]["E"] = (c == self.cols - 1)
+                cell["walls"] = {"N": True, "E": True, "S": True, "W": True}
+                cell["type"] = "empty"
+                # cell["walls"]["N"] = (r == 0)
+                # cell["walls"]["S"] = (r == self.rows - 1)
+                # cell["walls"]["W"] = (c == 0)
+                # cell["walls"]["E"] = (c == self.cols - 1)
         
-        # TODO: Replace with real maze algorithm so there is a unique-ish path
+        # Visited grid for DFS
+        visited = [[False for _ in range(self.cols)] for _ in range(self.rows)]
+
+        # Start from entrance
+        start_r, start_c = self.entrance
+        self._carve_passages_from(start_r, start_c, visited, rng)
+
+        # Exit is currently fixed at bottom-right; DFS guarantees it's reachable.
+        # Later, we can optionally choose exit as farthest cell from entrance.
+
+    def _carve_passages_from(self, r, c, visited, rng):
+        """
+        Recursive DFS maze carver
+        - r, c: current cell indices
+        - visited: 2D list of booleans
+        - rng: random.Random instance
+        """
+        visited[r][c] = True
+
+        # Directions: (dir_key, dr, dc, opposite_dir_key)
+        directions = [
+            ("N", -1, 0, "S"),
+            ("S", 1, 0, "N"),
+            ("W", 0, -1, "E"),
+            ("E", 0, 1, "W"),
+        ]
+        rng.shuffle(directions)
+
+        for dir_key, dr, dc, opposite_key in directions:
+            nr = r + dr
+            nc = c + dc
+
+            # Check bounds
+            if nr < 0 or nr >= self.rows or nc < 0 or nc >= self.cols:
+                continue
+            
+            if not visited[nr][nc]:
+                self.grid[r][c]["walls"][dir_key] = False
+                self.grid[nr][nc]["walls"][opposite_key] = False
+
+                # Recurse into neighbor
+                self._carve_passages_from(nr, nc, visited, rng)
     
     # ---------- Drawing ----------
     
@@ -366,9 +553,9 @@ class Maze:
             for c in range(self.cols):
                 self._draw_floor_cell(r, c)
         
-        # Draw a simple outer border wall as a placeholder
-        glColor3f(0.7, 0.7, 0.7)
-        self._draw_outer_walls()
+        # Draw walls per cell (N/E/S/W)
+        glColor3f(0.75, 0.75, 0.75)
+        self._draw_all_walls()
         
     def _draw_floor_cell(self, row, col):
         """
@@ -389,46 +576,53 @@ class Maze:
         glVertex3f(x0, 0.0, z1)
         glEnd()
         
-    def _draw_outer_wall(self):
+    def _draw_all_walls(self):
         """
-        Draw a simple rectangular border around the whole maze
+        Draw walls for each cell according to its 'walls' dictionary
+        To avoid drawing shared walls twice:
+        - for every cell, draw N and W walls if present
+        - for the last row, also draw S walls
+        - for the last column, also draw E walls
         """
-        # TODO
-        half_w = (self.cols * self.cell_size) / 2.0
-        half_h = (self.rows * self.cell_size) / 2.0
-        
-        y0 = 0.0
-        y1 = 2.0
-        
-        # Draw 4 walls as long quads
+        wall_height = 2.0
+
+        for r in range(self.rows):
+            for c in range(self.cols):
+                cell = self.grid[r][c]
+                x_center, z_center = self.cell_to_world(r, c)
+                s = self.cell_size / 2.0
+
+                # Precompute cell edge coordinates
+                x_left = x_center - s
+                x_right = x_center + s
+                z_top = z_center - s
+                z_bottom = z_center + s
+
+                # North wall
+                if cell["walls"]["N"]:
+                    self._draw_wall_segment(x_left, z_top, x_right, z_top, wall_height)
+                # West wall
+                if cell["walls"]["W"]:
+                    self._draw_wall_segment(x_left, z_top, x_left, z_bottom, wall_height)
+                # South wall
+                if r == self.rows - 1 and cell["walls"]["S"]:
+                    self._draw_wall_segment(x_left, z_bottom, x_right, z_bottom, wall_height)
+                # East wall
+                if c == self.cols - 1 and cell["walls"]["E"]:
+                    self._draw_wall_segment(x_right, z_top, x_right, z_bottom, wall_height)
+                
+    def _draw_wall_segment(self, x0, z0, x1, z1, height):
+        """
+        Draw a vertical wall quad along the segment from (x0, z0) to (x1, z1)
+        """
         glBegin(GL_QUADS)
-        
-        # North wall
-        glVertex3f(-half_w, y0, -half_h)
-        glVertex3f( half_w, y0, -half_h)
-        glVertex3f( half_w, y1, -half_h)
-        glVertex3f(-half_w, y1, -half_h)
-
-        # South wall
-        glVertex3f(-half_w, y0, half_h)
-        glVertex3f( half_w, y0, half_h)
-        glVertex3f( half_w, y1, half_h)
-        glVertex3f(-half_w, y1, half_h)
-
-        # West wall
-        glVertex3f(-half_w, y0, -half_h)
-        glVertex3f(-half_w, y0,  half_h)
-        glVertex3f(-half_w, y1,  half_h)
-        glVertex3f(-half_w, y1, -half_h)
-
-        # East wall
-        glVertex3f(half_w, y0, -half_h)
-        glVertex3f(half_w, y0,  half_h)
-        glVertex3f(half_w, y1,  half_h)
-        glVertex3f(half_w, y1, -half_h)
-
+        # Bottom edge
+        glVertex3f(x0, 0.0, z0)
+        glVertex3f(x1, 0.0, z1)
+        # Top edge
+        glVertex3f(x1, height, z1)
+        glVertex3f(x0, height, z0)
         glEnd()
-
 
 # -----------------------------
 # Game (main loop + glue)
@@ -444,6 +638,8 @@ class Game:
     def __init__(self, width=WINDOW_WIDTH, height=WINDOW_HEIGHT):
         pygame.init()
         pygame.display.set_caption("3D Maze Game - Jihao Ye")
+
+        self.font = pygame.font.SysFont("consolas", 20)
         
         pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
         self.width = width
@@ -460,6 +656,8 @@ class Game:
         # Player
         start_pos = self.maze.get_entrance_world_position()
         self.player = Player(start_pos)
+        self.player.yaw = self.maze.get_entry_yaw()
+        self.player.pitch = 0.0
         
         # Camera
         self.camera = CameraController()
@@ -473,6 +671,278 @@ class Game:
         self.start_time = time.time()
         self.elapsed_time = 0.0
 
+    def init_opengl(self):
+        """
+        Configure basic OpenGL state.
+        """
+        glViewport(0, 0, self.width, self.height)
+        glEnable(GL_DEPTH_TEST)
+
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluPerspective(FOV_Y, self.width / float(self.height), NEAR_PLANE, FAR_PLANE)
+
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+
+        # glEnable(GL_CULL_FACE)
+        # glCullFace(GL_BACK)
+
+    def handle_events(self):
+        """
+        Handle pygame events and return mouse deltas.
+        """
+        mouse_dx, mouse_dy = 0, 0
+
+        for event in pygame.event.get():
+            if event.type == QUIT:
+                self.running = False
+
+            elif event.type == KEYDOWN:
+                if event.key == K_ESCAPE:
+                    self.running = False
+
+                # Camera mode switching
+                elif event.key == K_1:
+                    self.camera.mode = "fps"
+                    print("Camera mode: fps")
+                elif event.key == K_2:
+                    self.camera.mode = "third_p"
+                    print("Camera mode: third-person")
+                elif event.key == K_3:
+                    self.camera.mode = "top_down"
+                    print("Camera mode: top-down")
+                elif event.key == K_4:
+                    self.camera.mode = "overview"
+                    print("Camera mode: overview")
+
+                # Restart from entrance
+                elif event.key == K_r:
+                    self.restart_from_entrance()
+                    print("Restarted from entrance")
+
+                # Regenerate maze
+                elif event.key == K_n:
+                    self.regenerate_maze()
+                    print("Regenerated maze")
+
+            elif event.type == MOUSEMOTION:
+                dx, dy = event.rel
+                mouse_dx += dx
+                mouse_dy += dy
+
+        return mouse_dx, mouse_dy
+
+    def restart_from_entrance(self):
+        """
+        Reset player to entrance and reset timer.
+        """
+        start_pos = self.maze.get_entrance_world_position()
+        self.player.set_position(*start_pos)
+        self.player.yaw = self.maze.get_entry_yaw()
+        self.player.pitch = 0.0
+        self.start_time = time.time()
+        self.elapsed_time = 0.0
+
+    def regenerate_maze(self):
+        """
+        Create a new maze, move player to entrance, reset timer.
+        """
+        self.maze.generate_random(seed=None)
+        start_pos = self.maze.get_entrance_world_position()
+        self.player.set_position(*start_pos)
+        self.player.yaw = self.maze.get_entry_yaw()
+        self.player.pitch = 0.0
+        self.start_time = time.time()
+        self.elapsed_time = 0.0
+
+    def update(self, dt, mouse_dx, mouse_dy):
+        """
+        Update game state: orientation, movement, timer.
+        """
+        # Mouse -> orientation
+        self.player.handle_mouse(mouse_dx, mouse_dy)
+
+        # Keyboard -> movement
+        keys = pygame.key.get_pressed()
+        old_x = self.player.position[0]
+        old_z = self.player.position[2]
+        self.player.handle_keyboard(dt, keys)
+        desired_x = self.player.position[0]
+        desired_z = self.player.position[2]
+
+        mid_x, mid_z = self.maze.apply_cell_collisions(old_x, old_z, desired_x, old_z)
+        final_x, final_z = self.maze.apply_cell_collisions(mid_x, mid_z, mid_x, desired_z)
+
+        self.player.position[0] = final_x
+        self.player.position[2] = final_z
+        
+        # Timer
+        self.elapsed_time = time.time() - self.start_time
+
+        # TODO:
+        # - collision with walls
+        # - traps / power-ups
+        # - detect reaching exit
+
+    def draw_scene(self):
+        """
+        Render the 3D world and HUD.
+        """
+        glClearColor(0.08, 0.08, 0.12, 1.0)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        # Set camera
+        self.camera.apply(self.player, self.maze)
+
+        # Draw maze (floor + border walls)
+        self.maze.draw()
+
+        # Simple reference cube at origin
+        glColor3f(0.8, 0.3, 0.3)
+        self._draw_unit_cube_at(0.0, 0.5, 0.0)
+
+        # 2D HUD
+        self.draw_hud()
+
+        # TODO:
+        # - draw player model for third-person/top-down if needed
+        # - draw 2D HUD (timer, position) with pygame text
+
+    def _draw_unit_cube_at(self, x, y, z):
+        """
+        Draw a 1x1x1 cube centered at (x, y, z).
+        """
+        s = 0.5
+        vertices = [
+            [-s, -s, -s],
+            [ s, -s, -s],
+            [ s,  s, -s],
+            [-s,  s, -s],
+            [-s, -s,  s],
+            [ s, -s,  s],
+            [ s,  s,  s],
+            [-s,  s,  s],
+        ]
+        faces = [
+            [0, 1, 2, 3],
+            [3, 2, 6, 7],
+            [7, 6, 5, 4],
+            [4, 5, 1, 0],
+            [1, 5, 6, 2],
+            [4, 0, 3, 7],
+        ]
+        glPushMatrix()
+        glTranslatef(x, y, z)
+        glBegin(GL_QUADS)
+        for face in faces:
+            for idx in face:
+                glVertex3fv(vertices[idx])
+        glEnd()
+        glPopMatrix()
+
+    def _start_2d(self):
+        """
+        Switch to 2D orthographic projection for HUD drawing
+        """
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        glOrtho(0, self.width, self.height, 0, -1, 1)
+
+        glMatrixMode(GL_MODELVIEW)
+        glPushMatrix()
+        glLoadIdentity()
+
+        glDisable(GL_DEPTH_TEST)
+
+    def _end_2d(self):
+        """
+        Restore 3D projection/modelview after HUD drawing.
+        """
+        glEnable(GL_DEPTH_TEST)
+
+        glMatrixMode(GL_MODELVIEW)
+        glPopMatrix()
+
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+
+        # Leave matrix mode in MODELVIEW for normal 3D rendering
+        glMatrixMode(GL_MODELVIEW)
+
+    
+    def _draw_text_2d(self, x, y, text, color=(255, 255, 255, 255)):
+        """
+        Draw text at screen coordinates (x, y) using a temporary texture.
+        (0,0) is top-left of the window.
+        """
+        if not text:
+            return
+
+        # Render text to a pygame surface
+        surface = self.font.render(text, True, color[:3])
+        text_data = pygame.image.tostring(surface, "RGBA", False)
+        w, h = surface.get_size()
+
+        # Create a temporary texture
+        tex_id = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, tex_id)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, text_data)
+
+        glEnable(GL_TEXTURE_2D)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        # Draw textured quad
+        glColor4f(1.0, 1.0, 1.0, 1.0)
+
+        # Draw textured quad
+        glBegin(GL_QUADS)
+        glTexCoord2f(0.0, 0.0)
+        glVertex2f(x, y)
+        glTexCoord2f(1.0, 0.0)
+        glVertex2f(x + w, y)
+        glTexCoord2f(1.0, 1.0)
+        glVertex2f(x + w, y + h)
+        glTexCoord2f(0.0, 1.0)
+        glVertex2f(x, y + h)
+        glEnd()
+
+        glDisable(GL_BLEND)
+        glDisable(GL_TEXTURE_2D)
+        glBindTexture(GL_TEXTURE_2D, 0)
+        glDeleteTextures([tex_id])
+    
+    def draw_hud(self):
+        """
+        Draw HUD with elapsed time and player position (cell indices).
+        """
+        # Format time as MM:SS
+        total_seconds = int(self.elapsed_time)
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        time_text = f"Time: {minutes:02d}:{seconds:02d}"
+
+        # Player cell position
+        px = self.player.position[0]
+        pz = self.player.position[2]
+        row, col = self.maze.world_to_cell_indices(px, pz)
+        pos_text = f"Cell: ({row}, {col})"
+
+        # Optional: world coords (rounded)
+        world_text = f"Pos: ({px:.1f}, {pz:.1f})"
+
+        self._start_2d()
+        # Top-left corner
+        self._draw_text_2d(10, 10, time_text)
+        self._draw_text_2d(10, 35, pos_text)
+        self._draw_text_2d(10, 60, world_text)
+        self._end_2d()
+    
     def run(self):
         """
         Main game loops
