@@ -1,3 +1,4 @@
 pygame
+pytest
 PyOpenGL
 PyOpenGL-accelerate
