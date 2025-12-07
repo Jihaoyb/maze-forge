@@ -15,7 +15,7 @@ Brief Description:
 # - These modules are C extensions / dynamic, so pylint cannot reliably
 #   see the symbols and reports them as undefined.
 # For THIS file, we disable those specific checks.
-# pylint: disable=fixme, wildcard-import, unused-wildcard-import, no-member, undefined-variable
+# pylint: disable=fixme, wildcard-import, unused-wildcard-import, no-member, undefined-variable, unsupported-binary-operation
 
 import sys
 import math
