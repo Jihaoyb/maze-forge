@@ -1,0 +1,10 @@
+[MASTER]
+# Optional: don't lint virtualenvs if they exist
+ignore=venv,.venv,env
+
+[MESSAGES CONTROL]
+# Turn everything off…
+disable=all
+
+# …then turn back on only real errors.
+enable=E,F

@@ -9,9 +9,18 @@ Brief Description:
     - Stack: pygame, PyOpenGL
 """
 
+# Pylint notes:
+# - We intentionally use wildcard imports from pygame.locals and PyOpenGL
+#   for convenience in a real-time graphics script.
+# - These modules are C extensions / dynamic, so pylint cannot reliably
+#   see the symbols and reports them as undefined.
+# For THIS file, we disable those specific checks.
+# pylint: disable=fixme, wildcard-import, unused-wildcard-import, no-member, undefined-variable
+
 import sys
 import math
 import time
+import random
 
 import pygame
 from pygame.locals import *
@@ -48,26 +57,26 @@ class Player:
     - yaw: rotation around Y axis
     - pitch: rotation around x axis
     """
-    
+
     def __init__(self, start_pos):
         self.position = [start_pos[0], start_pos[1], start_pos[2]]
         self.yaw = 0.0
         self.pitch = 0.0
         self.move_speed = 6.0
         self.mouse_sensitivity = 0.1
-    
+
     # ---------- Orientation helpers ----------
-    
+
     def handle_mouse(self, dx, dy):
         """
         Update yaw/pitch from mouse movement
         """
         self.yaw += dx * self.mouse_sensitivity
         self.pitch -= dy * self.mouse_sensitivity
-        
+
         # Clamp pitch to avoid flipping over
         self.pitch = max(-89.0, min(89.0, self.pitch))
-        
+
     def _forward_vector(self):
         """
         Computer the forward direction vector from yaw/pitch
@@ -75,13 +84,13 @@ class Player:
         """
         yaw_rad = math.radians(self.yaw)
         pitch_rad = math.radians(self.pitch)
-        
+
         fx = math.cos(pitch_rad) * math.sin(yaw_rad)
         fy = math.sin(pitch_rad)
         fz = -math.cos(pitch_rad) * math.cos(yaw_rad)
-        
+
         return [fx, fy, fz]
-    
+
     def _right_vector(self):
         """
         Computer the right direction vector
@@ -89,41 +98,41 @@ class Player:
         """
         fx, fy, fz = self._forward_vector()
         up = [0.0, 1.0, 0.0]
-        
+
         # right = forward * up
         rx = fy * up[2] - fz * up[1]
         ry = fz * up[0] - fx * up[2]
         rz = fx * up[1] - fy * up[0]
-        
+
         length = math.sqrt(rx * rx + ry * ry + rz * rz)
         if length > 0:
             rx /= length
             ry /= length
             rz /= length
-        
+
         return [rx, ry, rz]
-    
+
     def handle_keyboard(self, dt, keys):
         """
         Move in the XZ plane based on WASD keys
         """
         dir_x = 0.0
         dir_z = 0.0
-        
+
         # Froward vector projected onto XZ plane
         fx, _, fz = self._forward_vector()
         length_f = math.sqrt(fx * fx + fz * fz)
         if length_f > 0:
             fx /= length_f
             fz /= length_f
-        
+
         # Right vector projected onto XZ plane
         rx, _, rz = self._right_vector()
         length_r = math.sqrt(rx * rx + rz * rz)
         if length_r > 0:
             rx /= length_r
             rz /= length_r
-            
+
         # WASD movement input:
         if keys[K_w]:
             dir_x += fx
@@ -137,18 +146,18 @@ class Player:
         if keys[K_a]:
             dir_x -= rx
             dir_z -= rz
-            
+
         # Normalize direction
         length_dir = math.sqrt(dir_x * dir_x + dir_z * dir_z)
         if length_dir > 0:
             dir_x /= length_dir
             dir_z /= length_dir
-        
+
         # Apply movement
         speed = self.move_speed * dt
         self.position[0] += dir_x * speed
         self.position[2] += dir_z * speed
-        
+
     def set_position(self, x, y, z):
         """
         Teleport the player (used for restart/initalize)
@@ -156,25 +165,25 @@ class Player:
         self.position[0] = x
         self.position[1] = y
         self.position[2] = z
-        
+
     # ---------- Camera application ----------
-        
+
     def apply_camera_fps(self):
         """
         Set camera in fps mode (eye at player's head)
         """
         fx, fy, fz = self._forward_vector()
         px, py, pz = self.position
-        
+
         cx = px + fx
         cy = py + fy
         cz = pz + fz
-        
+
         glLoadIdentity()
         gluLookAt(px, py, pz,       # eye
                   cx, cy, cz,       # center
                   0.0, 1.0, 0.0)    # up
-    
+
     def apply_camera_third_p(self):
         """
         Set camera in 3rd-person mode (behind and above the player)
@@ -183,18 +192,18 @@ class Player:
         dist = 6.0
         height = 6.0
         px, py, pz = self.position
-        
+
         eye_x = px - math.sin(yaw_rad) * dist
         eye_y = py + height
         eye_z = pz + math.cos(yaw_rad) * dist
-        
+
         center_x, center_y, center_z = px, py, pz
-        
+
         glLoadIdentity()
         gluLookAt(eye_x, eye_y, eye_z,
                   center_x, center_y, center_z,
                   0.0, 1.0, 0.0)
-    
+
     def apply_camera_top_down(self):
         """
         Set camera in top-down mode (look straight down at player)
@@ -203,12 +212,12 @@ class Player:
         px, py, pz = self.position
         eye_x, eye_y, eye_z = px, height, pz
         center_x, center_y, center_z = px, 0.0, pz
-        
+
         glLoadIdentity()
         gluLookAt(eye_x, eye_y, eye_z,
                   center_x, center_y, center_z,
                   0.0, 0.0, -1.0)
-    
+
     def apply_camera_overview(self, maze=None):
         """
         Set camera in high view mode (center above the maze)
@@ -228,7 +237,7 @@ class Player:
         gluLookAt(eye_x, eye_y, eye_z,
                   center_x, center_y, center_z,
                   0.0, 0.0, -1.0)
-        
+
 
 
 # -----------------------------
@@ -242,11 +251,11 @@ class CameraController:
         - top_down: strict top-down view
         - overview: high view over the max
     """
-    
+
     def __init__(self):
         self.mode = "fps"
-        
-    
+
+
     def apply(self, player, maze=None):
         """
         Sets the view matrix based on current mode
@@ -283,7 +292,7 @@ class Maze:
         self.rows = rows
         self.cols = cols
         self.cell_size = cell_size
-        
+
         # Grid of cells; each cell is a dict for flexibility
         self.grid = [
             [
@@ -295,34 +304,34 @@ class Maze:
             ]
             for _ in range(rows)
         ]
-        
+
         # Entrance and exit cells
         self.entrance = (0, 0)
         self.exit = (rows - 1, cols - 1)
-        
+
     # ---------- Coordinate helpers ----------
-    
+
     def cell_to_world(self, row, col):
         """
         Convert cell (row, col) to world (x, z) center coordinates
         """
         half_w = (self.cols * self.cell_size) / 2.0
         half_h = (self.rows * self.cell_size) / 2.0
-        
+
         x = (col + 0.5) * self.cell_size - half_w
         z = (row + 0.5) * self.cell_size - half_h
-        
+
         return x, z
-    
+
     def get_entrance_world_position(self):
         """
         World-space starting position for thr player at the entrance
         """
         r, c = self.entrance
         x, z = self.cell_to_world(r, c)
-        
+
         return [x, 1.0, z]
-    
+
     def get_center_world(self):
         """
         World-space center of the maze
@@ -330,9 +339,9 @@ class Maze:
         center_row = self.rows / 2.0
         center_col = self.cols / 2.0
         x, z = self.cell_to_world(center_row - 0.5, center_col - 0.5)
-        
+
         return x, z
-    
+
     def get_entry_yaw(self):
         """
         Choose a reasonable initial yaw (in degrees) for the player
@@ -355,7 +364,7 @@ class Maze:
             return -90.0
 
         return 0.0
-    
+
     # ---------- Collision helpers ----------
 
     def world_to_cell_indices(self, x, z):
@@ -370,7 +379,7 @@ class Maze:
         row = int((z + half_h) // self.cell_size)
 
         return row, col
-    
+
     def _in_bounds(self, row, col):
         """
         Check if (row, col) is inside the maze grid
@@ -467,7 +476,7 @@ class Maze:
                 return old_x, old_z
             else:
                 return new_x, new_z
-        
+
         return new_x, new_z
 
     # ---------- Generation (TODO) ----------
@@ -478,12 +487,10 @@ class Maze:
         - start from the entrance cell
         - removes walls between cells to form a spanning tree
         """
-        import random
-
         # Local RNG so seeding does not affect global random state
         rng = random.Random(seed)
 
-        
+
         # Reset all walls to present and types to empty
         for r in range(self.rows):
             for c in range(self.cols):
@@ -494,7 +501,7 @@ class Maze:
                 # cell["walls"]["S"] = (r == self.rows - 1)
                 # cell["walls"]["W"] = (c == 0)
                 # cell["walls"]["E"] = (c == self.cols - 1)
-        
+
         # Visited grid for DFS
         visited = [[False for _ in range(self.cols)] for _ in range(self.rows)]
 
@@ -530,16 +537,16 @@ class Maze:
             # Check bounds
             if nr < 0 or nr >= self.rows or nc < 0 or nc >= self.cols:
                 continue
-            
+
             if not visited[nr][nc]:
                 self.grid[r][c]["walls"][dir_key] = False
                 self.grid[nr][nc]["walls"][opposite_key] = False
 
                 # Recurse into neighbor
                 self._carve_passages_from(nr, nc, visited, rng)
-    
+
     # ---------- Drawing ----------
-    
+
     def draw(self):
         """
         Draw floor for each cell and walls around the maze
@@ -552,30 +559,30 @@ class Maze:
         for r in range(self.rows):
             for c in range(self.cols):
                 self._draw_floor_cell(r, c)
-        
+
         # Draw walls per cell (N/E/S/W)
         glColor3f(0.75, 0.75, 0.75)
         self._draw_all_walls()
-        
+
     def _draw_floor_cell(self, row, col):
         """
         Draw a single floor quad for cell (row, col)
         """
         x_center, z_center = self.cell_to_world(row, col)
         s = self.cell_size / 2.0
-        
+
         x0 = x_center - s
         x1 = x_center + s
         z0 = z_center - s
         z1 = z_center + s
-        
+
         glBegin(GL_QUADS)
         glVertex3f(x0, 0.0, z0)
         glVertex3f(x1, 0.0, z0)
         glVertex3f(x1, 0.0, z1)
         glVertex3f(x0, 0.0, z1)
         glEnd()
-        
+
     def _draw_all_walls(self):
         """
         Draw walls for each cell according to its 'walls' dictionary
@@ -610,7 +617,7 @@ class Maze:
                 # East wall
                 if c == self.cols - 1 and cell["walls"]["E"]:
                     self._draw_wall_segment(x_right, z_top, x_right, z_bottom, wall_height)
-                
+
     def _draw_wall_segment(self, x0, z0, x1, z1, height):
         """
         Draw a vertical wall quad along the segment from (x0, z0) to (x1, z1)
@@ -634,38 +641,38 @@ class Game:
         - Player, CameraController, Maze
         - Event handling, update, render loop
     """
-    
+
     def __init__(self, width=WINDOW_WIDTH, height=WINDOW_HEIGHT):
         pygame.init()
         pygame.display.set_caption("3D Maze Game - Jihao Ye")
 
         self.font = pygame.font.SysFont("consolas", 20)
-        
+
         pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
         self.width = width
         self.height = height
         self.running = True
-        
+
         # OpenGL setup
         self.init_opengl()
-        
+
         # Maze
         self.maze = Maze(MAZE_ROWS, MAZE_COLS, MAZE_CELL_SIZE)
         self.maze.generate_random(seed=None) # TODO: replace placeholder
-        
+
         # Player
         start_pos = self.maze.get_entrance_world_position()
         self.player = Player(start_pos)
         self.player.yaw = self.maze.get_entry_yaw()
         self.player.pitch = 0.0
-        
+
         # Camera
         self.camera = CameraController()
-        
+
         # Mouse grab
         pygame.event.set_grab(True)
         pygame.mouse.set_visible(False)
-        
+
         # Timing
         self.clock = pygame.time.Clock()
         self.start_time = time.time()
@@ -776,7 +783,7 @@ class Game:
 
         self.player.position[0] = final_x
         self.player.position[2] = final_z
-        
+
         # Timer
         self.elapsed_time = time.time() - self.start_time
 
@@ -871,7 +878,7 @@ class Game:
         # Leave matrix mode in MODELVIEW for normal 3D rendering
         glMatrixMode(GL_MODELVIEW)
 
-    
+
     def _draw_text_2d(self, x, y, text, color=(255, 255, 255, 255)):
         """
         Draw text at screen coordinates (x, y) using a temporary texture.
@@ -916,7 +923,7 @@ class Game:
         glDisable(GL_TEXTURE_2D)
         glBindTexture(GL_TEXTURE_2D, 0)
         glDeleteTextures([tex_id])
-    
+
     def draw_hud(self):
         """
         Draw HUD with elapsed time and player position (cell indices).
@@ -942,7 +949,7 @@ class Game:
         self._draw_text_2d(10, 35, pos_text)
         self._draw_text_2d(10, 60, world_text)
         self._end_2d()
-    
+
     def run(self):
         """
         Main game loops
