@@ -648,7 +648,8 @@ class Game:
 
         self.font = pygame.font.SysFont("consolas", 20)
 
-        pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
+        flags = DOUBLEBUF | OPENGL  # pylint: disable=unsupported-binary-operation
+        pygame.display.set_mode((width, height), flags)
         self.width = width
         self.height = height
         self.running = True
