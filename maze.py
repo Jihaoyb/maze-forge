@@ -64,6 +64,10 @@ class Player:
         self.pitch = 0.0
         self.move_speed = 6.0
         self.mouse_sensitivity = 0.1
+        self.vertical_velocity = 0.0
+        self.gravity = -20.0
+        self.jump_speed = 8.0
+        self.ground_y = start_pos[1]
 
     # ---------- Orientation helpers ----------
 
@@ -158,6 +162,26 @@ class Player:
         self.position[0] += dir_x * speed
         self.position[2] += dir_z * speed
 
+    def update_vertical(self, dt, jump_pressed):
+        """
+        Apply gravity and optional jump
+        - dt: delta time in seconds
+        - jump_pressed: bool
+        """
+        # If on the ground and space is pressed, start a jump
+        on_ground = self.position[1] <= self.ground_y + 1e-3
+        if jump_pressed and on_ground and self.vertical_velocity <= 0.0:
+            self.vertical_velocity = self.jump_speed
+
+        # Gravity always applies
+        self.vertical_velocity += self.gravity * dt
+        self.position[1] += self.vertical_velocity * dt
+
+        # Clamp to ground
+        if self.position[1] < self.ground_y:
+            self.position[1] = self.ground_y
+            self.vertical_velocity = 0.0
+
     def set_position(self, x, y, z):
         """
         Teleport the player (used for restart/initalize)
@@ -165,6 +189,10 @@ class Player:
         self.position[0] = x
         self.position[1] = y
         self.position[2] = z
+
+        # Reset vertical state
+        self.ground_y = y
+        self.vertical_velocity = 0.0
 
     # ---------- Camera application ----------
 
@@ -331,6 +359,14 @@ class Maze:
         x, z = self.cell_to_world(r, c)
 
         return [x, 1.0, z]
+
+    def get_exit_world_position(self):
+        """
+        World-space position for the maze exit
+        """
+        r, c = self.exit
+        x, z = self.cell_to_world(r, c)
+        return [x, 0.5, z]
 
     def get_center_world(self):
         """
@@ -679,6 +715,10 @@ class Game:
         self.start_time = time.time()
         self.elapsed_time = 0.0
 
+        # Game state
+        self.game_state = "playing"
+        self.final_time = 0.0
+
     def init_opengl(self):
         """
         Configure basic OpenGL state.
@@ -751,6 +791,8 @@ class Game:
         self.player.pitch = 0.0
         self.start_time = time.time()
         self.elapsed_time = 0.0
+        self.game_state = "playing"
+        self.final_time = 0.0
 
     def regenerate_maze(self):
         """
@@ -763,11 +805,17 @@ class Game:
         self.player.pitch = 0.0
         self.start_time = time.time()
         self.elapsed_time = 0.0
+        self.game_state = "playing"
+        self.final_time = 0.0
 
     def update(self, dt, mouse_dx, mouse_dy):
         """
         Update game state: orientation, movement, timer.
         """
+        # If already won, keep state frozen
+        if self.game_state != "playing":
+            return
+
         # Mouse -> orientation
         self.player.handle_mouse(mouse_dx, mouse_dy)
 
@@ -785,13 +833,30 @@ class Game:
         self.player.position[0] = final_x
         self.player.position[2] = final_z
 
+        self.player.update_vertical(dt, keys[K_SPACE])
+
         # Timer
         self.elapsed_time = time.time() - self.start_time
+
+        # Check if reached exit
+        if self._player_at_exit():
+            self.game_state = "won"
+            self.final_time = self.elapsed_time
 
         # TODO:
         # - collision with walls
         # - traps / power-ups
         # - detect reaching exit
+
+    def _player_at_exit(self):
+        """
+        Return True if the player's cell matches the maze exit cell
+        """
+        px = self.player.position[0]
+        pz = self.player.position[2]
+        row, col = self.maze.world_to_cell_indices(px, pz)
+        exit_r, exit_c = self.maze.exit
+        return row == exit_r and col == exit_c
 
     def draw_scene(self):
         """
@@ -805,6 +870,11 @@ class Game:
 
         # Draw maze (floor + border walls)
         self.maze.draw()
+
+        # Mark exit cell with a green cube
+        ex, _, ez = self.maze.get_exit_world_position()
+        glColor3f(0.2, 0.8, 0.3)
+        self._draw_unit_cube_at(ex, 0.5, ez)
 
         # Simple reference cube at origin
         glColor3f(0.8, 0.3, 0.3)
@@ -929,6 +999,15 @@ class Game:
         """
         Draw HUD with elapsed time and player position (cell indices).
         """
+        # Choose which time to display
+        if self.game_state == "won":
+            display_time = self.final_time
+        else:
+            display_time = self.elapsed_time
+
+        # Format time as MM:SS
+        total_seconds = int(display_time)
+
         # Format time as MM:SS
         total_seconds = int(self.elapsed_time)
         minutes = total_seconds // 60
@@ -944,11 +1023,19 @@ class Game:
         # Optional: world coords (rounded)
         world_text = f"Pos: ({px:.1f}, {pz:.1f})"
 
+        # Status / hint text
+        if self.game_state == "won":
+            status_text = "Reached EXIT! Press R to restart, N for new maze."
+        else:
+            exit_r, exit_c = self.maze.exit
+            status_text = f"Exit cell: ({exit_r}, {exit_c})"
+
         self._start_2d()
         # Top-left corner
         self._draw_text_2d(10, 10, time_text)
         self._draw_text_2d(10, 35, pos_text)
         self._draw_text_2d(10, 60, world_text)
+        self._draw_text_2d(10, 85, status_text)
         self._end_2d()
 
     def run(self):
